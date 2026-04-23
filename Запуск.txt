@@ -1,0 +1,3 @@
+py .\ollama_event_parser.py --timeout 10 --retries 1 --limit 50
+
+py .\export_open_close_csv.py

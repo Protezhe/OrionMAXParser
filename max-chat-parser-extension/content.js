@@ -5,6 +5,13 @@
 
   const DEFAULT_SELECTORS = {
     chatRootSelector: "main, [role='main'], [class*='chat']",
+    messageSelector: ".block[role='listitem'], [class*='messageWrapper']",
+    textSelector: ".bubble > .text, [data-bubbles-variant] .bubble > .text, [class*='bubble'] > [class*='text']",
+    authorSelector: ".header .name .text, [class*='header'] [class*='name'] [class*='text'], [class*='name']",
+    timeSelector: ".meta .text, [class*='meta'] [class*='text'], time, [data-testid*='time'], [class*='time'], [class*='timestamp']"
+  };
+
+  const LEGACY_SELECTORS = {
     messageSelector: "[data-testid*='message'], [class*='message'], [role='listitem']",
     textSelector: "[data-testid*='text'], [class*='text'], [class*='content'], p, span, div",
     authorSelector: "[data-testid*='author'], [class*='author'], [class*='sender'], [class*='name']",
@@ -78,6 +85,187 @@
     return normalizeText(node.innerText || node.textContent || "");
   }
 
+  function toIsoIfPossible(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return "";
+    }
+    const parsed = Date.parse(normalized);
+    if (Number.isNaN(parsed)) {
+      return "";
+    }
+    return new Date(parsed).toISOString();
+  }
+
+  function pad2(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function extractTimeOnly(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return "";
+    }
+    const match = normalized.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+    if (!match) {
+      return "";
+    }
+    return `${pad2(match[1])}:${match[2]}`;
+  }
+
+  function formatDateKey(date) {
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  }
+
+  function parseDateLabelToKey(label) {
+    const normalized = normalizeText(label).toLowerCase();
+    if (!normalized) {
+      return "";
+    }
+
+    const now = new Date();
+    if (normalized === "сегодня") {
+      return formatDateKey(now);
+    }
+    if (normalized === "вчера") {
+      const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      return formatDateKey(day);
+    }
+
+    const ruMonths = {
+      "января": 1,
+      "февраля": 2,
+      "марта": 3,
+      "апреля": 4,
+      "мая": 5,
+      "июня": 6,
+      "июля": 7,
+      "августа": 8,
+      "сентября": 9,
+      "октября": 10,
+      "ноября": 11,
+      "декабря": 12
+    };
+
+    const words = normalized.match(/^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?$/i);
+    if (words) {
+      const day = Number(words[1]);
+      const month = ruMonths[words[2]];
+      const year = words[3] ? Number(words[3]) : now.getFullYear();
+      if (day >= 1 && day <= 31 && month && year >= 1970) {
+        return `${year}-${pad2(month)}-${pad2(day)}`;
+      }
+    }
+
+    const numeric = normalized.match(/^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?$/);
+    if (numeric) {
+      const day = Number(numeric[1]);
+      const month = Number(numeric[2]);
+      const yearRaw = numeric[3];
+      const year = yearRaw ? Number(yearRaw.length === 2 ? `20${yearRaw}` : yearRaw) : now.getFullYear();
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+        return `${year}-${pad2(month)}-${pad2(day)}`;
+      }
+    }
+
+    return "";
+  }
+
+  function combineDateAndTimeToIso(dateKey, time) {
+    if (!dateKey || !time) {
+      return "";
+    }
+    const parsed = Date.parse(`${dateKey}T${time}:00`);
+    if (Number.isNaN(parsed)) {
+      return "";
+    }
+    return new Date(parsed).toISOString();
+  }
+
+  function extractMessageTimestamp(node, settings) {
+    const timeNode = safeQueryOne(node, settings.timeSelector);
+    if (!timeNode) {
+      return {
+        time: "",
+        messageDate: "",
+        messageDateIso: ""
+      };
+    }
+
+    const rawTime = normalizeText(timeNode.innerText || timeNode.textContent || "");
+    const time = extractTimeOnly(rawTime) || rawTime;
+    const attrCandidates = [
+      "datetime",
+      "data-timestamp",
+      "data-time",
+      "data-date",
+      "title",
+      "aria-label"
+    ];
+
+    let rawDate = "";
+    for (const attrName of attrCandidates) {
+      const attrValue = timeNode.getAttribute(attrName);
+      if (attrValue && normalizeText(attrValue)) {
+        rawDate = normalizeText(attrValue);
+        break;
+      }
+    }
+
+    const messageDate = rawDate;
+    const messageDateIso = toIsoIfPossible(messageDate);
+
+    return {
+      time,
+      messageDate,
+      messageDateIso
+    };
+  }
+
+  function extractDateCapsule(node) {
+    const capsule = safeQueryOne(node, ".capsule, [class*='capsule']");
+    if (!capsule) {
+      return "";
+    }
+    return normalizeText(capsule.innerText || capsule.textContent || "");
+  }
+
+  function resolveDateCapsules(root) {
+    return safeQueryAll(root, ".capsule, [class*='capsule']")
+      .map((node) => {
+        const label = normalizeText(node.innerText || node.textContent || "");
+        const key = parseDateLabelToKey(label);
+        return key ? { node, key } : null;
+      })
+      .filter(Boolean);
+  }
+
+  function isCapsuleBeforeNode(capsuleNode, targetNode) {
+    if (!capsuleNode || !targetNode) {
+      return false;
+    }
+    if (capsuleNode === targetNode) {
+      return true;
+    }
+    const relation = capsuleNode.compareDocumentPosition(targetNode);
+    return Boolean(
+      relation & Node.DOCUMENT_POSITION_FOLLOWING ||
+        relation & Node.DOCUMENT_POSITION_CONTAINED_BY
+    );
+  }
+
+  function findDateKeyForNode(node, capsules) {
+    let lastKey = "";
+    for (const capsule of capsules) {
+      if (isCapsuleBeforeNode(capsule.node, node)) {
+        lastKey = capsule.key;
+        continue;
+      }
+      break;
+    }
+    return lastKey;
+  }
+
   function resolveRoot(settings) {
     const candidates = uniqueText([
       settings.chatRootSelector,
@@ -107,10 +295,10 @@
     }
 
     const fallbackSelectors = [
-      "[role='listitem']",
+      ".block[role='listitem']",
+      "[class*='messageWrapper']",
       "[class*='message']",
-      "article",
-      "li"
+      "article"
     ];
 
     for (const selector of fallbackSelectors) {
@@ -148,34 +336,33 @@
     return fallback;
   }
 
-  function buildMessage(node, index, settings) {
+  function buildMessage(node, index, settings, dateFromCapsuleKey) {
     const author = pickFirstText(node, settings.authorSelector);
-    const time = pickFirstText(node, settings.timeSelector);
+    const timestamp = extractMessageTimestamp(node, settings);
+    const time = timestamp.time;
     const text = extractMessageText(node, settings, author, time);
+    const contextDate = dateFromCapsuleKey;
+    const messageDate = timestamp.messageDate || contextDate;
 
     if (!text || text.length < 2) {
       return null;
     }
 
-    const signature = `${index}|${author}|${time}|${text}`;
     return {
-      id: stableHash(signature),
-      index,
-      author,
-      time,
       text,
-      sourceUrl: location.href,
-      capturedAt: new Date().toISOString()
+      messageDate,
+      time
     };
   }
 
   function mergeMessages(incoming) {
     let added = 0;
     for (const message of incoming) {
-      if (!message || state.messageIds.has(message.id)) {
+      const key = message && message.text ? stableHash(message.text) : "";
+      if (!message || !key || state.messageIds.has(key)) {
         continue;
       }
-      state.messageIds.add(message.id);
+      state.messageIds.add(key);
       state.messages.push(message);
       added += 1;
     }
@@ -183,10 +370,22 @@
   }
 
   function collectMessages() {
+    const root = resolveRoot(state.settings);
     const nodes = resolveMessageNodes(state.settings);
-    const parsed = nodes
-      .map((node, index) => buildMessage(node, index, state.settings))
-      .filter(Boolean);
+    const capsules = resolveDateCapsules(root);
+    const parsed = [];
+    for (const [index, node] of nodes.entries()) {
+      const capsuleText = extractDateCapsule(node);
+      const capsuleDate = parseDateLabelToKey(capsuleText);
+      if (capsuleDate) {
+        continue;
+      }
+      const effectiveDateKey = findDateKeyForNode(node, capsules);
+      const message = buildMessage(node, index, state.settings, effectiveDateKey);
+      if (message) {
+        parsed.push(message);
+      }
+    }
     const added = mergeMessages(parsed);
     state.lastCollectAt = new Date().toISOString();
 
@@ -240,13 +439,49 @@
     state.lastCollectAt = null;
   }
 
+  function migrateLegacySettings(input) {
+    const settings = {
+      ...input
+    };
+    let changed = false;
+
+    if (settings.messageSelector === LEGACY_SELECTORS.messageSelector) {
+      settings.messageSelector = DEFAULT_SELECTORS.messageSelector;
+      changed = true;
+    }
+    if (settings.textSelector === LEGACY_SELECTORS.textSelector) {
+      settings.textSelector = DEFAULT_SELECTORS.textSelector;
+      changed = true;
+    }
+    if (settings.authorSelector === LEGACY_SELECTORS.authorSelector) {
+      settings.authorSelector = DEFAULT_SELECTORS.authorSelector;
+      changed = true;
+    }
+    if (settings.timeSelector === LEGACY_SELECTORS.timeSelector) {
+      settings.timeSelector = DEFAULT_SELECTORS.timeSelector;
+      changed = true;
+    }
+
+    return {
+      settings,
+      changed
+    };
+  }
+
   async function loadSettings() {
     const data = await chrome.storage.sync.get(STORAGE_KEY);
     const saved = data[STORAGE_KEY] || {};
-    state.settings = {
+    const merged = {
       ...DEFAULT_SELECTORS,
       ...saved
     };
+    const migrated = migrateLegacySettings(merged);
+    state.settings = migrated.settings;
+    if (migrated.changed) {
+      await chrome.storage.sync.set({
+        [STORAGE_KEY]: state.settings
+      });
+    }
   }
 
   async function saveSettings(nextSettings) {

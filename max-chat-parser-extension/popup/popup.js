@@ -2,10 +2,10 @@
 
 const DEFAULT_SELECTORS = {
   chatRootSelector: "main, [role='main'], [class*='chat']",
-  messageSelector: "[data-testid*='message'], [class*='message'], [role='listitem']",
-  textSelector: "[data-testid*='text'], [class*='text'], [class*='content'], p, span, div",
-  authorSelector: "[data-testid*='author'], [class*='author'], [class*='sender'], [class*='name']",
-  timeSelector: "time, [data-testid*='time'], [class*='time'], [class*='timestamp']"
+  messageSelector: ".block[role='listitem'], [class*='messageWrapper']",
+  textSelector: ".bubble > .text, [data-bubbles-variant] .bubble > .text, [class*='bubble'] > [class*='text']",
+  authorSelector: ".header .name .text, [class*='header'] [class*='name'] [class*='text'], [class*='name']",
+  timeSelector: ".meta .text, [class*='meta'] [class*='text'], time, [data-testid*='time'], [class*='time'], [class*='timestamp']"
 };
 
 const els = {
