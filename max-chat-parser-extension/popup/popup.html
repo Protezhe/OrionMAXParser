@@ -9,47 +9,54 @@
   <body>
     <main class="app">
       <h1>MAX Chat Parser</h1>
-      <p class="hint">Откройте нужный чат в web.max.ru и нажмите "Собрать".</p>
+      <p class="hint">Откройте чат на web.max.ru и нажмите «Собрать».</p>
 
-      <section class="panel">
-        <div class="line"><span>Сообщений:</span><strong id="count">0</strong></div>
-        <div class="line"><span>Наблюдение:</span><strong id="observeState">выкл.</strong></div>
-        <div class="line"><span>Статус:</span><span id="status">готово</span></div>
+      <section class="panel status-panel">
+        <span id="status">готово</span>
+        <span id="currentTab" class="chat-key"></span>
       </section>
 
       <section class="buttons">
         <button id="collectBtn">Собрать</button>
-        <button id="startObserveBtn">Старт наблюдения</button>
-        <button id="stopObserveBtn" class="muted">Стоп наблюдения</button>
-        <button id="exportJsonBtn">Экспорт JSON</button>
-        <button id="exportTxtBtn">Экспорт TXT</button>
-        <button id="clearBtn" class="muted">Очистить</button>
       </section>
 
       <section class="panel">
-        <h2>Селекторы (если парсинг пустой)</h2>
-        <label>
-          Корень чата
-          <input id="chatRootSelector" type="text" />
-        </label>
-        <label>
-          Контейнер сообщения
-          <input id="messageSelector" type="text" />
-        </label>
-        <label>
-          Текст сообщения
-          <input id="textSelector" type="text" />
-        </label>
-        <label>
-          Автор
-          <input id="authorSelector" type="text" />
-        </label>
-        <label>
-          Время
-          <input id="timeSelector" type="text" />
-        </label>
-        <button id="applySelectorsBtn">Применить селекторы</button>
+        <h2>Чат</h2>
+        <div class="chat-row">
+          <select id="chatSelect">
+            <option value="">— загрузка… —</option>
+          </select>
+          <button id="refreshChatsBtn" class="icon-btn" title="Обновить">↻</button>
+        </div>
       </section>
+
+      <section class="panel">
+        <h2>Дата</h2>
+        <div class="date-row">
+          <input id="dateFilterInput" type="date" />
+        </div>
+        <div class="date-hint" id="dateHint"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Промт</h2>
+        <textarea id="promptInput" rows="10" placeholder="Вставьте промт..."></textarea>
+      </section>
+
+      <section class="panel">
+        <h2>Результат</h2>
+        <div class="result-toolbar">
+          <button id="copyResultBtn" class="primary-btn">Копировать</button>
+        </div>
+        <textarea id="dateJsonOutput" rows="10" readonly placeholder="Выберите дату, нажмите «Собрать»..."></textarea>
+      </section>
+
+      <details class="panel collapsible">
+        <summary>Сохранить чат в файл</summary>
+        <div class="collapsible-body">
+          <button id="saveChatJsonBtn" class="muted-btn">Сохранить .txt</button>
+        </div>
+      </details>
     </main>
 
     <script src="popup.js"></script>

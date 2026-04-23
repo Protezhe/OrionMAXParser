@@ -25,11 +25,59 @@
     observer: null,
     observing: false,
     collectTimer: null,
-    lastCollectAt: null
+    lastCollectAt: null,
+    chatKey: ""
   };
 
   function normalizeText(value) {
     return (value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function parseChatKeyFromUrl(url) {
+    const raw = normalizeText(url);
+    if (!raw) {
+      return "__global__";
+    }
+
+    try {
+      const parsed = new URL(raw);
+      const path = normalizeText(parsed.pathname);
+      const search = normalizeText(parsed.search);
+      const hash = normalizeText(parsed.hash);
+
+      if (path && path !== "/") {
+        return `${parsed.origin}${path}`;
+      }
+      if (hash) {
+        return `${parsed.origin}${hash}`;
+      }
+      if (search) {
+        return `${parsed.origin}${search}`;
+      }
+      return `${parsed.origin}/`;
+    } catch (_error) {
+      return raw;
+    }
+  }
+
+  function clearCollectedMessages() {
+    if (state.collectTimer) {
+      clearTimeout(state.collectTimer);
+      state.collectTimer = null;
+    }
+    state.messages = [];
+    state.messageIds = new Set();
+    state.lastCollectAt = null;
+  }
+
+  function syncChatContext() {
+    const nextChatKey = parseChatKeyFromUrl(location.href);
+    if (nextChatKey === state.chatKey) {
+      return false;
+    }
+    state.chatKey = nextChatKey;
+    clearCollectedMessages();
+    return true;
   }
 
   function stableHash(input) {
@@ -370,6 +418,7 @@
   }
 
   function collectMessages() {
+    syncChatContext();
     const root = resolveRoot(state.settings);
     const nodes = resolveMessageNodes(state.settings);
     const capsules = resolveDateCapsules(root);
@@ -434,9 +483,7 @@
 
   function clearMessages() {
     stopObserver();
-    state.messages = [];
-    state.messageIds = new Set();
-    state.lastCollectAt = null;
+    clearCollectedMessages();
   }
 
   function migrateLegacySettings(input) {
@@ -495,9 +542,11 @@
   }
 
   function getStatePayload() {
+    syncChatContext();
     return {
       ok: true,
       url: location.href,
+      chatKey: state.chatKey,
       total: state.messages.length,
       observing: state.observing,
       lastCollectAt: state.lastCollectAt,
@@ -518,8 +567,10 @@
       }
 
       if (message.type === "GET_MESSAGES") {
+        syncChatContext();
         sendResponse({
           ok: true,
+          chatKey: state.chatKey,
           messages: state.messages
         });
         return;
@@ -577,9 +628,11 @@
 
   loadSettings()
     .then(() => {
+      syncChatContext();
       collectMessages();
     })
     .catch(() => {
+      syncChatContext();
       collectMessages();
     });
 })();

@@ -15,43 +15,50 @@ body {
 }
 
 h1 {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   font-size: 18px;
 }
 
 h2 {
-  margin: 0 0 10px;
-  font-size: 14px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #5c6576;
 }
 
 .hint {
   margin: 0 0 12px;
   font-size: 12px;
-  color: #5c6576;
+  color: #7f8aa3;
 }
 
 .panel {
   margin-bottom: 12px;
-  padding: 10px;
+  padding: 10px 12px;
   border: 1px solid #d7dfeb;
   border-radius: 8px;
   background: #ffffff;
 }
 
-.line {
+.status-panel {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  font-size: 13px;
+  align-items: center;
+  font-size: 12px;
 }
 
-.line + .line {
-  margin-top: 6px;
+.chat-key {
+  font-size: 11px;
+  color: #7f8aa3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
 }
 
 .buttons {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -59,7 +66,7 @@ h2 {
 button {
   border: 1px solid #0f5ae0;
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 8px 14px;
   background: #0f5ae0;
   color: #ffffff;
   font-size: 12px;
@@ -67,21 +74,55 @@ button {
 }
 
 button:hover {
-  opacity: 0.92;
+  opacity: 0.9;
 }
 
-button.muted {
+button.muted-btn {
   border-color: #7f8aa3;
   background: #7f8aa3;
 }
 
-label {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 12px;
+button.primary-btn {
+  border-color: #0f5ae0;
+  background: #0f5ae0;
 }
 
-input[type="text"] {
+button.icon-btn {
+  border-color: #7f8aa3;
+  background: #7f8aa3;
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.chat-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+select {
+  flex: 1;
+  border: 1px solid #c6d0e0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.date-row {
+  margin-bottom: 6px;
+}
+
+.date-hint {
+  font-size: 11px;
+  color: #7f8aa3;
+  min-height: 16px;
+}
+
+input[type="date"],
+textarea {
   width: 100%;
   box-sizing: border-box;
   margin-top: 4px;
@@ -91,6 +132,51 @@ input[type="text"] {
   font-size: 12px;
 }
 
-#status {
-  text-align: right;
+textarea {
+  min-height: 160px;
+  resize: vertical;
+  background: #f9fbff;
+}
+
+#promptInput {
+  min-height: 220px;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+#dateJsonOutput {
+  font-family: Consolas, "Courier New", monospace;
+  min-height: 200px;
+}
+
+.result-toolbar {
+  margin-bottom: 6px;
+}
+
+details.collapsible {
+  border-radius: 8px;
+}
+
+details.collapsible > summary {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 0;
+  color: #5c6576;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+details.collapsible > summary::before {
+  content: "\25B6";
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+
+details.collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.collapsible-body {
+  padding-top: 8px;
 }
