@@ -11,6 +11,17 @@ from pathlib import Path
 
 
 TIME_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+OUTPUT_FIELDS = (
+    "text",
+    "Павильон",
+    "Статус",
+    "Дата",
+    "Время",
+    "ИсточникВремени",
+    "ПосетителейНаСеанс",
+    "ВремяСеанса",
+    "КатегорияСобытия",
+)
 
 
 def maybe_fix_mojibake(text: str) -> str:
@@ -126,31 +137,7 @@ def call_ollama(model: str, prompt: str, endpoint: str, timeout: float, retries:
     raise RuntimeError(f"Ollama request failed: {last_error}")
 
 
-def build_prompt(text: str, message_date: str, message_time: str) -> str:
-    return (
-        "Ты извлекаешь событие из одного сообщения дежурного чата.\n"
-        "Верни ТОЛЬКО JSON-объект БЕЗ комментариев со схемой:\n"
-        "{\n"
-        '  "category": "status|attendance|other",\n'
-        '  "pavilion": "строка или null",\n'
-        '  "status": "open|closed|repair|open_after_repair|null",\n'
-        '  "attendance_count": "целое число или null",\n'
-        '  "session_time": "HH:MM или null",\n'
-        '  "time_from_text": "HH:MM или null"\n'
-        "}\n"
-        "Правила:\n"
-        "- status=repair, если явно про ремонт/покрасочные/техработы.\n"
-        "- status=open_after_repair, если явно после ремонта снова работает.\n"
-        "- attendance_count только если это сообщение про посетителей/билеты на сеанс.\n"
-        "- session_time это время сеанса для attendance.\n"
-        "- time_from_text это время события, если оно есть в тексте.\n"
-        f"messageDate: {message_date}\n"
-        f"messageTime: {message_time}\n"
-        f"message: {text}"
-    )
-
-
-def normalize_model_result(raw: str) -> dict:
+def _clean_json_text(raw: str) -> str:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
@@ -159,18 +146,39 @@ def normalize_model_result(raw: str) -> dict:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
+    return cleaned
 
-    if cleaned and cleaned[0] != "{":
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            cleaned = cleaned[start : end + 1]
 
-    try:
-        obj = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Ollama returned non-JSON: {raw}") from exc
+def build_batch_prompt(items: list[dict]) -> str:
+    payload = json.dumps(items, ensure_ascii=False)
+    return (
+        "Ты извлекаешь события из сообщений дежурного чата.\n"
+        "Верни ТОЛЬКО JSON-объект БЕЗ комментариев в формате:\n"
+        "{\n"
+        '  "items": [\n'
+        "    {\n"
+        '      "id": 0,\n'
+        '      "category": "status|attendance|other",\n'
+        '      "pavilion": "строка или null",\n'
+        '      "status": "open|closed|repair|open_after_repair|null",\n'
+        '      "attendance_count": "целое число или null",\n'
+        '      "session_time": "HH:MM или null",\n'
+        '      "time_from_text": "HH:MM или null"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Правила:\n"
+        "- Для каждого входного элемента должен быть ровно один выходной элемент с тем же id.\n"
+        "- status=repair, если явно про ремонт/покрасочные/техработы.\n"
+        "- status=open_after_repair, если явно после ремонта снова работает.\n"
+        "- attendance_count только если это сообщение про посетителей/билеты на сеанс.\n"
+        "- session_time это время сеанса для attendance.\n"
+        "- time_from_text это время события, если оно есть в тексте.\n"
+        f"messages: {payload}"
+    )
 
+
+def normalize_model_item(obj: dict) -> dict:
     category = obj.get("category")
     if category not in {"status", "attendance", "other"}:
         category = "other"
@@ -203,6 +211,53 @@ def normalize_model_result(raw: str) -> dict:
     }
 
 
+def normalize_batch_result(raw: str, expected_size: int) -> list[dict]:
+    cleaned = _clean_json_text(raw)
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start_obj = cleaned.find("{")
+        end_obj = cleaned.rfind("}")
+        start_arr = cleaned.find("[")
+        end_arr = cleaned.rfind("]")
+        if start_obj != -1 and end_obj > start_obj:
+            data = json.loads(cleaned[start_obj : end_obj + 1])
+        elif start_arr != -1 and end_arr > start_arr:
+            data = json.loads(cleaned[start_arr : end_arr + 1])
+        else:
+            raise RuntimeError(f"Ollama returned non-JSON: {raw}")
+
+    if isinstance(data, dict):
+        items = data.get("items")
+    elif isinstance(data, list):
+        items = data
+    else:
+        raise RuntimeError(f"Unexpected model response type: {type(data).__name__}")
+
+    if not isinstance(items, list):
+        raise RuntimeError("Model response must contain list in 'items'")
+    if len(items) != expected_size:
+        raise RuntimeError(f"Batch size mismatch: expected {expected_size}, got {len(items)}")
+
+    by_id: dict[int, dict] = {}
+    can_use_ids = True
+
+    for item in items:
+        if not isinstance(item, dict):
+            raise RuntimeError("Each batch item from model must be a JSON object")
+        item_id = item.get("id")
+        if isinstance(item_id, int) and 0 <= item_id < expected_size and item_id not in by_id:
+            by_id[item_id] = normalize_model_item(item)
+        else:
+            can_use_ids = False
+
+    if can_use_ids and len(by_id) == expected_size:
+        return [by_id[idx] for idx in range(expected_size)]
+
+    return [normalize_model_item(item) for item in items]
+
+
 def map_status_to_ru(status: str | None) -> str | None:
     mapping = {
         "open": "открыт",
@@ -226,31 +281,173 @@ def choose_event_time(model_time: str | None, raw_text: str, fallback_time: str)
     return fallback_time
 
 
-def enrich_message(message: dict, model: str, endpoint: str, timeout: float, retries: int) -> dict:
-    text_raw = str(message.get("text", "")).strip()
-    message_date = normalize_message_date(str(message.get("messageDate", "")))
-    if not message_date:
-        raise RuntimeError("messageDate is missing or invalid")
+def build_output_row(
+    *,
+    parsed: dict,
+    message_date: str,
+    message_time: str,
+    source_text_raw: str,
+    source_text: str,
+) -> dict:
+    event_time = choose_event_time(parsed.get("time_from_text"), source_text, fallback_time=message_time)
+    return {
+        "text": source_text_raw,
+        "Павильон": parsed.get("pavilion"),
+        "Статус": map_status_to_ru(parsed.get("status")),
+        "Дата": message_date,
+        "Время": event_time,
+        "ИсточникВремени": "text" if parsed.get("time_from_text") or TIME_RE.search(source_text) else "message_time",
+        "ПосетителейНаСеанс": parsed.get("attendance_count"),
+        "ВремяСеанса": parsed.get("session_time"),
+        "КатегорияСобытия": parsed.get("category"),
+    }
 
+
+def build_fallback_row(message: dict) -> dict:
+    message_date = normalize_message_date(str(message.get("messageDate", ""))) or ""
     message_time = normalize_hhmm(str(message.get("time", "")).strip()) or "00:00"
-    text = maybe_fix_mojibake(text_raw)
+    source_text = str(message.get("text", "")).strip()
+    return {
+        "text": maybe_fix_mojibake(source_text),
+        "Павильон": None,
+        "Статус": None,
+        "Дата": message_date,
+        "Время": message_time,
+        "ИсточникВремени": "message_time",
+        "ПосетителейНаСеанс": None,
+        "ВремяСеанса": None,
+        "КатегорияСобытия": "other",
+    }
 
-    prompt = build_prompt(text=text, message_date=message_date, message_time=message_time)
+
+def compact_output_row(row: dict) -> dict:
+    return {field: row.get(field) for field in OUTPUT_FIELDS}
+
+
+def load_existing_output_messages(output_path: Path) -> list[dict]:
+    if not output_path.exists():
+        return []
+
+    with output_path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if isinstance(raw, dict):
+        messages = raw.get("messages", [])
+    elif isinstance(raw, list):
+        messages = raw
+    else:
+        raise RuntimeError("Output JSON must be an object with messages or a list")
+
+    if not isinstance(messages, list):
+        raise RuntimeError("Output JSON field 'messages' must be a list")
+
+    normalized = []
+    for item in messages:
+        if isinstance(item, dict):
+            normalized.append(compact_output_row(item))
+    return normalized
+
+
+def save_output(
+    *,
+    output_path: Path,
+    input_path: Path,
+    source_count: int,
+    processed_now: int,
+    model: str,
+    messages: list[dict],
+) -> None:
+    payload = {
+        "input": str(input_path),
+        "sourceCount": source_count,
+        "count": len(messages),
+        "processedThisRun": processed_now,
+        "model": model,
+        "messages": messages,
+    }
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def enrich_batch(messages_batch: list[dict], model: str, endpoint: str, timeout: float, retries: int) -> list[dict]:
+    prepared = []
+    prompt_items = []
+    for idx, message in enumerate(messages_batch):
+        text_raw = str(message.get("text", "")).strip()
+        message_date = normalize_message_date(str(message.get("messageDate", "")))
+        if not message_date:
+            raise RuntimeError(f"messageDate is missing or invalid at batch item {idx}")
+        message_time = normalize_hhmm(str(message.get("time", "")).strip()) or "00:00"
+        text = maybe_fix_mojibake(text_raw)
+
+        prepared.append({"message": message, "message_date": message_date, "message_time": message_time, "text": text})
+        prompt_items.append({"id": idx, "messageDate": message_date, "messageTime": message_time, "message": text})
+
+    prompt = build_batch_prompt(prompt_items)
     raw = call_ollama(model=model, prompt=prompt, endpoint=endpoint, timeout=timeout, retries=retries)
-    parsed = normalize_model_result(raw)
+    parsed_items = normalize_batch_result(raw, expected_size=len(messages_batch))
 
-    event_time = choose_event_time(parsed.get("time_from_text"), text, fallback_time=message_time)
+    output = []
+    for idx, parsed in enumerate(parsed_items):
+        src = prepared[idx]
+        out = build_output_row(
+            parsed=parsed,
+            message_date=src["message_date"],
+            message_time=src["message_time"],
+            source_text_raw=src["text"],
+            source_text=src["text"],
+        )
+        output.append(out)
 
-    out = dict(message)
-    out["Павильон"] = parsed.get("pavilion")
-    out["Статус"] = map_status_to_ru(parsed.get("status"))
-    out["Дата"] = message_date
-    out["Время"] = event_time
-    out["ИсточникВремени"] = "text" if parsed.get("time_from_text") or TIME_RE.search(text) else "message_time"
-    out["ПосетителейНаСеанс"] = parsed.get("attendance_count")
-    out["ВремяСеанса"] = parsed.get("session_time")
-    out["КатегорияСобытия"] = parsed.get("category")
-    return out
+    return output
+
+
+def enrich_batch_with_split(
+    messages_batch: list[dict],
+    model: str,
+    endpoint: str,
+    timeout: float,
+    retries: int,
+    fail_fast: bool,
+) -> list[dict]:
+    try:
+        return enrich_batch(
+            messages_batch=messages_batch,
+            model=model,
+            endpoint=endpoint,
+            timeout=timeout,
+            retries=retries,
+        )
+    except Exception as exc:
+        size = len(messages_batch)
+        if size <= 1:
+            if fail_fast:
+                raise
+            print(f"Single message failed, writing fallback row: {exc}", file=sys.stderr)
+            return [build_fallback_row(messages_batch[0])]
+
+        mid = size // 2
+        print(
+            f"Batch of {size} failed ({exc}). Retrying as {mid}+{size - mid}.",
+            file=sys.stderr,
+        )
+        left = enrich_batch_with_split(
+            messages_batch=messages_batch[:mid],
+            model=model,
+            endpoint=endpoint,
+            timeout=timeout,
+            retries=retries,
+            fail_fast=fail_fast,
+        )
+        right = enrich_batch_with_split(
+            messages_batch=messages_batch[mid:],
+            model=model,
+            endpoint=endpoint,
+            timeout=timeout,
+            retries=retries,
+            fail_fast=fail_fast,
+        )
+        return left + right
 
 
 def main() -> int:
@@ -288,6 +485,12 @@ def main() -> int:
         help="How many retries for failed Ollama requests (default: 1)",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="How many messages to send to model in one request (default: 10)",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Stop immediately on first Ollama error",
@@ -302,44 +505,83 @@ def main() -> int:
     if not isinstance(data, dict):
         raise RuntimeError("Input file must contain a JSON object with a messages array")
 
-    messages = data.get("messages")
-    if not isinstance(messages, list):
+    source_messages = data.get("messages")
+    if not isinstance(source_messages, list):
         raise RuntimeError("Input JSON must contain messages as a list")
 
-    total = len(messages)
-    limit = total if args.limit <= 0 else min(args.limit, total)
+    source_total = len(source_messages)
+    ready_messages = load_existing_output_messages(output_path)
+    start_index = len(ready_messages)
+    if start_index > source_total:
+        raise RuntimeError(
+            f"Output has more rows than input messages ({start_index} > {source_total}). "
+            "Delete output file or use another --output path."
+        )
+
+    end_index = source_total if args.limit <= 0 else min(source_total, start_index + args.limit)
+    run_total = max(0, end_index - start_index)
+
+    if not output_path.exists():
+        save_output(
+            output_path=output_path,
+            input_path=input_path,
+            source_count=source_total,
+            processed_now=0,
+            model=args.model,
+            messages=ready_messages,
+        )
 
     model = args.model
-    if limit > 0 and model == "auto":
+    if run_total > 0 and model == "auto":
         model = detect_first_model(args.endpoint, timeout=args.timeout)
         print(f"Auto model selected: {model}", file=sys.stderr)
 
-    for idx in range(limit):
+    batch_size = max(1, args.batch_size)
+    processed_now = 0
+
+    for start in range(start_index, end_index, batch_size):
+        end = min(start + batch_size, end_index)
         try:
-            messages[idx] = enrich_message(
-                messages[idx],
+            enriched = enrich_batch_with_split(
+                source_messages[start:end],
                 model=model,
                 endpoint=args.endpoint,
                 timeout=args.timeout,
                 retries=max(args.retries, 0),
+                fail_fast=args.fail_fast,
             )
-            print(f"Processed {idx + 1}/{limit}", file=sys.stderr)
+            ready_messages.extend(enriched)
+            processed_now += len(enriched)
+            save_output(
+                output_path=output_path,
+                input_path=input_path,
+                source_count=source_total,
+                processed_now=processed_now,
+                model=model,
+                messages=ready_messages,
+            )
+            print(f"Processed {end}/{end_index}", file=sys.stderr)
         except Exception as exc:
-            print(f"Error on message {idx + 1}/{limit}: {exc}", file=sys.stderr)
+            print(f"Error on batch {start + 1}-{end}/{end_index}: {exc}", file=sys.stderr)
             if args.fail_fast:
                 raise
-            messages[idx] = dict(messages[idx])
-            messages[idx]["parser_error"] = str(exc)
-
-    data["messages"] = messages
-    data["count"] = len(messages)
-
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+            fallback_rows = [build_fallback_row(msg) for msg in source_messages[start:end]]
+            ready_messages.extend(fallback_rows)
+            processed_now += len(fallback_rows)
+            save_output(
+                output_path=output_path,
+                input_path=input_path,
+                source_count=source_total,
+                processed_now=processed_now,
+                model=model,
+                messages=ready_messages,
+            )
 
     print(f"Input: {input_path}")
     print(f"Output: {output_path}")
-    print(f"Processed messages: {limit}")
+    print(f"Start index: {start_index}")
+    print(f"Processed this run: {processed_now}")
+    print(f"Total in output: {len(ready_messages)}")
     print(f"Model: {model}")
     return 0
 
