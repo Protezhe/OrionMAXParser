@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "MAX Chat Parser",
+  "version": "1.0.0",
+  "description": "Сбор текста переписки из web.max.ru с экспортом в JSON и TXT.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://web.max.ru/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://web.max.ru/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "MAX Chat Parser",
+    "default_popup": "popup/popup.html"
+  }
+}

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MAX Chat Parser</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>MAX Chat Parser</h1>
+      <p class="hint">Откройте нужный чат в web.max.ru и нажмите "Собрать".</p>
+
+      <section class="panel">
+        <div class="line"><span>Сообщений:</span><strong id="count">0</strong></div>
+        <div class="line"><span>Наблюдение:</span><strong id="observeState">выкл.</strong></div>
+        <div class="line"><span>Статус:</span><span id="status">готово</span></div>
+      </section>
+
+      <section class="buttons">
+        <button id="collectBtn">Собрать</button>
+        <button id="startObserveBtn">Старт наблюдения</button>
+        <button id="stopObserveBtn" class="muted">Стоп наблюдения</button>
+        <button id="exportJsonBtn">Экспорт JSON</button>
+        <button id="exportTxtBtn">Экспорт TXT</button>
+        <button id="clearBtn" class="muted">Очистить</button>
+      </section>
+
+      <section class="panel">
+        <h2>Селекторы (если парсинг пустой)</h2>
+        <label>
+          Корень чата
+          <input id="chatRootSelector" type="text" />
+        </label>
+        <label>
+          Контейнер сообщения
+          <input id="messageSelector" type="text" />
+        </label>
+        <label>
+          Текст сообщения
+          <input id="textSelector" type="text" />
+        </label>
+        <label>
+          Автор
+          <input id="authorSelector" type="text" />
+        </label>
+        <label>
+          Время
+          <input id="timeSelector" type="text" />
+        </label>
+        <button id="applySelectorsBtn">Применить селекторы</button>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
