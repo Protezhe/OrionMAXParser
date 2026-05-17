@@ -112,7 +112,18 @@ select {
 }
 
 .date-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
   margin-bottom: 6px;
+}
+
+.date-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #5c6576;
 }
 
 .date-hint {

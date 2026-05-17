@@ -33,7 +33,14 @@
       <section class="panel">
         <h2>Дата</h2>
         <div class="date-row">
-          <input id="dateFilterInput" type="date" />
+          <label>
+            <span>С</span>
+            <input id="dateStartInput" type="date" />
+          </label>
+          <label>
+            <span>По</span>
+            <input id="dateEndInput" type="date" />
+          </label>
         </div>
         <div class="date-hint" id="dateHint"></div>
       </section>
@@ -48,13 +55,13 @@
         <div class="result-toolbar">
           <button id="copyResultBtn" class="primary-btn">Копировать</button>
         </div>
-        <textarea id="dateJsonOutput" rows="10" readonly placeholder="Выберите дату, нажмите «Собрать»..."></textarea>
+        <textarea id="dateJsonOutput" rows="10" readonly placeholder="Выберите диапазон дат, нажмите «Собрать»..."></textarea>
       </section>
 
       <details class="panel collapsible">
         <summary>Сохранить чат в файл</summary>
         <div class="collapsible-body">
-          <button id="saveChatJsonBtn" class="muted-btn">Сохранить .txt</button>
+          <button id="saveChatJsonBtn" class="muted-btn">Сохранить parse.json</button>
         </div>
       </details>
     </main>

@@ -1,0 +1,14 @@
+python .\ollama_three_stage_day.py --month 2026-04 --config .\config.json
+
+python ollama_technical_stops_messages.py --date 2026-04-21
+
+python.exe instructor_daily_attraction_events.py --date 2026-04-25 --output reports\2026-04-25_instructor_events.json
+
+python.exe instructor_daily_attraction_events.py --month 2026-04 --output reports\04.2026_instructor_events.json
+
+python instructor_daily_attraction_events.py --month 2026-05
+
+python generate_monthly_report.py --month 2026-04
+python generate_monthly_report.py --month 2026-05
+
+python generate_report.py --month 2026-05

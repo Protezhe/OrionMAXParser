@@ -39,7 +39,8 @@ const els = {
   collectBtn: document.getElementById("collectBtn"),
   chatSelect: document.getElementById("chatSelect"),
   refreshChatsBtn: document.getElementById("refreshChatsBtn"),
-  dateFilterInput: document.getElementById("dateFilterInput"),
+  dateStartInput: document.getElementById("dateStartInput"),
+  dateEndInput: document.getElementById("dateEndInput"),
   dateHint: document.getElementById("dateHint"),
   promptInput: document.getElementById("promptInput"),
   dateJsonOutput: document.getElementById("dateJsonOutput"),
@@ -292,17 +293,53 @@ async function syncMessagesToStore() {
   return result;
 }
 
-function filterMessagesByDate(messages, dateKey) {
-  if (!dateKey) return messages;
-  return messages.filter((msg) => msg.messageDate === dateKey);
+function getSelectedDateRange() {
+  const start = els.dateStartInput.value || "";
+  const end = els.dateEndInput.value || "";
+  return { start, end };
 }
 
-function buildOutput(dateKey, messages, prompt) {
-  const filtered = filterMessagesByDate(messages, dateKey);
+function validateDateRange(range) {
+  if (range.start && range.end && range.start > range.end) {
+    throw new Error("Дата начала диапазона не может быть позже даты окончания.");
+  }
+}
+
+function filterMessagesByDateRange(messages, range) {
+  validateDateRange(range);
+  const filtered = (!range.start && !range.end) ? messages : messages.filter((msg) => {
+    const messageDate = msg.messageDate || "";
+    if (!messageDate) return false;
+    if (range.start && messageDate < range.start) return false;
+    if (range.end && messageDate > range.end) return false;
+    return true;
+  });
+  return sortMessagesByDateTime(filtered);
+}
+
+function sortMessagesByDateTime(messages) {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort((a, b) => {
+      const aDate = a.message.messageDate || "";
+      const bDate = b.message.messageDate || "";
+      if (aDate !== bDate) return aDate.localeCompare(bDate);
+
+      const aTime = a.message.time || "";
+      const bTime = b.message.time || "";
+      if (aTime !== bTime) return aTime.localeCompare(bTime);
+
+      return a.index - b.index;
+    })
+    .map((item) => item.message);
+}
+
+function buildOutput(range, messages, prompt) {
+  const filtered = filterMessagesByDateRange(messages, range);
   if (!filtered.length) {
     return prompt
-      ? `# === PROMPT ===\n${prompt}\n\n# Нет сообщений за выбранную дату.`
-      : "# Нет сообщений за выбранную дату.";
+      ? `# === PROMPT ===\n${prompt}\n\n# Нет сообщений за выбранный диапазон дат.`
+      : "# Нет сообщений за выбранный диапазон дат.";
   }
   const lines = [];
   if (prompt) {
@@ -364,11 +401,11 @@ async function updateOutputForChat(chatKey, sourceUrl) {
       els.dateJsonOutput.value = "";
       return;
     }
-    const dateKey = els.dateFilterInput.value || "";
+    const range = getSelectedDateRange();
     const prompt = getPromptText();
-    els.dateJsonOutput.value = buildOutput(dateKey, payload.messages, prompt);
-  } catch (_e) {
-    els.dateJsonOutput.value = "";
+    els.dateJsonOutput.value = buildOutput(range, payload.messages, prompt);
+  } catch (error) {
+    els.dateJsonOutput.value = error.message || "";
   }
 }
 
@@ -378,13 +415,11 @@ function updateOutput() {
   void updateOutputForChat(key, url);
 }
 
-function buildSafeFilename(raw) {
-  return String(raw || "").replace(/[^a-zA-Zа-яА-ЯёЁ0-9_\-.]/g, "_").slice(0, 80) || "chat";
-}
-
 async function saveChatJson() {
   const key = els.chatSelect.value || selectedChatKey;
   const url = key === selectedChatKey ? "" : key;
+  const range = getSelectedDateRange();
+  validateDateRange(range);
   const payload = await sendToBackground({
     type: "GET_PARSE_MESSAGES",
     chatKey: key,
@@ -397,20 +432,21 @@ async function saveChatJson() {
   if (!messages.length) {
     throw new Error("В этом чате нет сообщений. Нажмите «Собрать».");
   }
-  const label = buildSafeFilename(key);
-  const prompt = getPromptText();
-  const lines = prompt ? [`# === PROMPT ===\n${prompt}\n# === MESSAGES ===`] : ["# === MESSAGES ==="];
-  for (const msg of messages) {
-    const date = msg.messageDate || "";
-    const time = msg.time || "";
-    const header = [date, time].filter(Boolean).join(" ");
-    lines.push(header ? `[${header}] ${msg.text}` : msg.text);
+  const filteredMessages = filterMessagesByDateRange(messages, range);
+  if (!filteredMessages.length) {
+    throw new Error("За выбранный диапазон дат сообщений нет.");
   }
-  const content = lines.join("\n");
+  const exportData = {
+    exportedAt: new Date().toISOString(),
+    sourceUrl: payload.chatKey || key,
+    count: filteredMessages.length,
+    messages: filteredMessages
+  };
+  const content = JSON.stringify(exportData, null, 2);
   const result = await sendToBackground({
     type: "DOWNLOAD_FILE",
-    mimeType: "text/plain",
-    filename: `max-chat-${label}.txt`,
+    mimeType: "application/json",
+    filename: "parse.json",
     content
   });
   if (!result || !result.ok) {
@@ -454,7 +490,8 @@ els.chatSelect.addEventListener("change", async () => {
 
 els.refreshChatsBtn.addEventListener("click", () => runAction(refreshChatList));
 
-els.dateFilterInput.addEventListener("change", updateOutput);
+els.dateStartInput.addEventListener("change", updateOutput);
+els.dateEndInput.addEventListener("change", updateOutput);
 
 els.promptInput.addEventListener("input", () => {
   schedulePromptSave();
