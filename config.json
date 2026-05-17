@@ -8,8 +8,6 @@
     "top_p": 0.9
   },
   "json_path": "05.2026.json",
-  "workbook_path": "Ведомость_аттракционов_2026_шаблон.xlsm",
-  "output_workbook_path": "Ведомость_аттракционов_2026_заполнено.xlsm",
   "stops_input_path": "Ввод остановок.xlsx",
   "input_sheet_name": "Ввод_остановок",
   "input_table_name": "tblStops",
