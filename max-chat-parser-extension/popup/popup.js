@@ -262,14 +262,14 @@ function populateChatSelect(keys, currentKey) {
 }
 
 async function collectNow() {
-  const result = await sendToChat({ type: "COLLECT_NOW" });
-  if (!result || !result.ok) {
-    throw new Error(result && result.error ? result.error : "Сбор не выполнен.");
+  const collectResult = await sendToChat({ type: "COLLECT_NOW" });
+  if (!collectResult || !collectResult.ok) {
+    throw new Error(collectResult && collectResult.error ? collectResult.error : "Сбор не выполнен.");
   }
-  const total = result.total || 0;
-  const added = result.result ? result.result.added : 0;
+  const syncResult = await syncMessagesToStore();
+  const total = syncResult.total || 0;
+  const added = syncResult.added || 0;
   setStatus(`собрано ${total}, новых ${added}`);
-  await syncMessagesToStore();
   await refreshChatList();
   updateDateHint();
   updateOutput();

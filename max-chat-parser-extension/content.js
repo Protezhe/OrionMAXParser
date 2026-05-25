@@ -77,16 +77,40 @@
     }
     state.chatKey = nextChatKey;
     clearCollectedMessages();
+    void syncWithStorage();
     return true;
   }
 
-  function stableHash(input) {
-    let hash = 0;
-    for (let i = 0; i < input.length; i += 1) {
-      hash = (hash << 5) - hash + input.charCodeAt(i);
-      hash |= 0;
+  function messageKey(message) {
+    if (!message) {
+      return "";
     }
-    return `m_${Math.abs(hash)}`;
+    const text = normalizeText(message.text);
+    const date = normalizeText(message.messageDate);
+    const time = normalizeText(message.time);
+    return `${date}|${time}|${text}`;
+  }
+
+  async function syncWithStorage() {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "GET_PARSE_MESSAGES",
+        chatKey: state.chatKey,
+        sourceUrl: location.href
+      });
+      if (response && response.ok && Array.isArray(response.messages)) {
+        for (const msg of response.messages) {
+          const key = messageKey(msg);
+          if (key && !state.messageIds.has(key)) {
+            state.messageIds.add(key);
+            // We don't necessarily need to add to state.messages if we only want to track 'new' ones in state.messages
+            // But for consistency with how collectMessages works, let's keep state.messages as "messages found in this session that are NOT in storage"
+          }
+        }
+      }
+    } catch (_error) {
+      // Background might not be ready or message type unknown
+    }
   }
 
   function uniqueText(items) {
@@ -406,7 +430,7 @@
   function mergeMessages(incoming) {
     let added = 0;
     for (const message of incoming) {
-      const key = message && message.text ? stableHash(message.text) : "";
+      const key = messageKey(message);
       if (!message || !key || state.messageIds.has(key)) {
         continue;
       }
@@ -627,12 +651,14 @@
   });
 
   loadSettings()
-    .then(() => {
+    .then(async () => {
       syncChatContext();
+      await syncWithStorage();
       collectMessages();
     })
-    .catch(() => {
+    .catch(async () => {
       syncChatContext();
+      await syncWithStorage();
       collectMessages();
     });
 })();

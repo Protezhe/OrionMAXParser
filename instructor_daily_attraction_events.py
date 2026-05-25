@@ -54,8 +54,9 @@ TECHNICAL_STOP_MARKERS = [
     "компрессор",
     "бугел",
     "полом",
-    "внеплановое то",
-    "внепланое то",
+    "внеплан",
+    " то",
+    "продлен",
     "модул",
     "сбой",
     "неисправ",
@@ -70,6 +71,37 @@ GENERIC_STOP_REASONS = [
     "стоп аттракциона",
     "остановка аттракциона",
     "закрытие продаж",
+]
+
+DEFAULT_TECHNICAL_REASON_PATTERNS = [
+    r"(потеря связи)",
+    r"(ошибка [^.,;]+)",
+    r"(завис [^.,;]+)",
+    r"(не запускается|не запустился|не запустилась|не запустились)",
+    r"(нет подачи питания[^.,;]*)",
+    r"(ремонт [^.,;]+)",
+    r"(замена [^.,;]+)",
+    r"(проверка работы [^.,;]+)",
+    r"(ведутся технические работы)",
+    r"(тех(?:нические)? неполадки)",
+    r"(техническая поломка|поломка[^.,;]*)",
+    r"(technical_breakdown|technical_failure|техническая поломка|поломка[^.,;]*)",
+    r"(неисправн(?:ость|ости)? [^.,;]+)",
+    r"(не открываются крепления)",
+    r"(платформа не в исходной)",
+    r"(не закрываются прижимные механизмы)",
+]
+
+DEFAULT_SIMPLE_START_MARKERS = [
+    "в работе",
+    "готов к работе",
+    "готова к работе",
+    "готовы к работе",
+]
+
+DEFAULT_GENERIC_STOP_QUOTES = [
+    "стоп",
+    "в стопе",
 ]
 
 
@@ -105,18 +137,71 @@ def parse_args() -> argparse.Namespace:
 
 
 def mojibake_badness(text: str) -> int:
-    markers = ("Р", "С", "вЂ", "в„", "РЃ", "СЃ", "СЊ", "С‹", "СЏ", "С‡", "С€", "С‰")
-    return sum(text.count(marker) for marker in markers)
+    if not text:
+        return 0
+    bad_count = 0
+    # UTF-8 Cyrillic often starts with 0xD0 or 0xD1.
+    # In CP1251, 0xD0 is 'Р' (\u0420), 0xD1 is 'С' (\u0421).
+    # We look for these followed by bytes that are NOT valid characters in that sequence but are common in mojibake.
+    
+    # Specific common mojibake markers (using hex to be safe from terminal encoding issues)
+    # \u00d0 is 'Ð' (Latin-1), often looks like '╨' in CP866 or 'Р' in CP1251
+    # \u00d1 is 'Ñ' (Latin-1), often looks like '╤' in CP866 or 'С' in CP1251
+    mojibake_markers = (
+        "\u00d0", "\u00d1", # Ð, Ñ
+        "\u2568", "\u2564", # ╨, ╤ in CP866
+        "\u201e", "\u201d", # тАЭ etc usually involve these
+    )
+    
+    # We only count these if they are followed by other suspicious characters
+    # to avoid false positives on valid 'Р' and 'С'.
+    # Actually, a simpler way is to look for box-drawing characters which are rare in normal text.
+    box_chars = "\u2500-\u257f"
+    bad_count += len(re.findall(f"[{box_chars}]", text)) * 5
+    
+    # High badness for known mojibake sequences
+    bad_sequences = ("РІР‚", "РІвЂћ", "в„", "вЂ", "тА")
+    for seq in bad_sequences:
+        bad_count += text.count(seq) * 20
+        
+    return bad_count
+
+
+def cyrillic_count(text: str) -> int:
+    return len(re.findall(r"[\u0400-\u04FF]", text))
 
 
 def fix_text_mojibake(value: str) -> str:
     if not value:
         return value
-    try:
-        fixed = value.encode("cp1251").decode("utf-8")
-    except UnicodeError:
+    
+    # Check current state
+    current_badness = mojibake_badness(value)
+    current_cyrillic = cyrillic_count(value)
+    
+    # If no mojibake markers found, don't touch it
+    if current_badness == 0:
         return value
-    return fixed if mojibake_badness(fixed) + 2 < mojibake_badness(value) else value
+        
+    best_text = value
+    min_badness = current_badness
+    max_cyrillic = current_cyrillic
+    
+    for enc in ("cp1251", "cp866", "cp850", "koi8-r", "latin-1"):
+        try:
+            fixed = value.encode(enc).decode("utf-8")
+            bad = mojibake_badness(fixed)
+            cyr = cyrillic_count(fixed)
+            
+            # If we found a string with less mojibake markers, or same markers but more cyrillic
+            if bad < min_badness or (bad == min_badness and cyr > max_cyrillic):
+                min_badness = bad
+                max_cyrillic = cyr
+                best_text = fixed
+        except Exception:
+            continue
+            
+    return best_text
 
 
 def fix_nested_mojibake(value: Any) -> Any:
@@ -187,10 +272,49 @@ def build_models() -> tuple[type[Any], type[Any]]:
     return AttractionEvent, DayEvents
 
 
-def model_to_dict(value: Any) -> dict[str, Any]:
+def model_to_plain(value: Any) -> Any:
+    if isinstance(value, list):
+        return [model_to_plain(item) for item in value]
+    if isinstance(value, tuple):
+        return [model_to_plain(item) for item in value]
     if hasattr(value, "model_dump"):
         return value.model_dump()
-    return value.dict()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return value
+
+
+def model_to_dict(value: Any) -> dict[str, Any]:
+    plain = model_to_plain(value)
+    if isinstance(plain, dict):
+        return plain
+    if isinstance(plain, list):
+        return {"events": plain}
+    return {"events": []}
+
+
+def extract_events_from_model_result(value: Any) -> list[dict[str, Any]]:
+    plain = model_to_plain(value)
+    if isinstance(plain, dict):
+        events = plain.get("events", [])
+    else:
+        events = plain
+
+    if isinstance(events, str):
+        try:
+            events = json.loads(events)
+        except json.JSONDecodeError:
+            return []
+
+    if not isinstance(events, list):
+        return []
+
+    result: list[dict[str, Any]] = []
+    for event in events:
+        event = model_to_plain(event)
+        if isinstance(event, dict):
+            result.append(event)
+    return result
 
 
 def ollama_openai_base_url(cfg: dict[str, Any]) -> str:
@@ -231,9 +355,9 @@ def target_attractions(cfg: dict[str, Any]) -> list[str]:
     return [str(item.get("sheet_name", "")).strip() for item in cfg.get("attractions", []) if item.get("sheet_name")]
 
 
-def format_numbered_messages(messages: list[dict[str, str]]) -> str:
+def format_numbered_messages(messages: list[dict[str, str]], start_index: int = 1) -> str:
     lines: list[str] = []
-    for index, msg in enumerate(messages, start=1):
+    for index, msg in enumerate(messages, start=start_index):
         time = str(msg.get("time", "")).strip() or "--:--"
         text = str(msg.get("text", "")).strip()
         lines.append(f"#{index}. {time} {text}".strip())
@@ -251,24 +375,46 @@ def get_park_hours(cfg: dict[str, Any], date_str: str) -> tuple[str, str]:
         return str(cfg.get("park_open", "09:00")), str(cfg.get("park_close", "22:00"))
 
 
-def build_prompt(cfg: dict[str, Any], date: str, messages: list[dict[str, str]]) -> str:
+def instructor_chunk_size(cfg: dict[str, Any]) -> int:
+    try:
+        size = int(cfg.get("instructor_chunk_size", 12))
+    except (TypeError, ValueError):
+        size = 12
+    return max(1, size)
+
+
+def iter_message_chunks(
+    messages: list[dict[str, str]], cfg: dict[str, Any]
+) -> list[tuple[int, list[dict[str, str]]]]:
+    size = instructor_chunk_size(cfg)
+    return [(start + 1, messages[start : start + size]) for start in range(0, len(messages), size)]
+
+
+def build_prompt(
+    cfg: dict[str, Any],
+    date: str,
+    messages: list[dict[str, str]],
+    message_start_index: int = 1,
+) -> str:
     park_open, park_close = get_park_hours(cfg, date)
     return f"""Дата: {date}
 Стандартная работа парка: с {park_open} до {park_close}
 
-Сообщения за день целиком. Номера сообщений обязательны для ссылок:
-{format_numbered_messages(messages)}
+Сообщения за день или фрагмент дня. Номера сообщений обязательны для ссылок:
+{format_numbered_messages(messages, message_start_index)}
 
 Задача: извлеки структурированные события по ВСЕМ аттракционам, которые упоминаются в чате.
 
 Типы событий:
 - STOP_UNPLANNED: только внеплановая техническая остановка аттракциона: поломка, ошибка запуска, ремонт, внеплановое ТО, технические работы, потеря связи, ошибка датчика/механизма (например: не открываются крепления/бугели, платформа не в исходной, не закрываются прижимные механизмы), закрытие продаж из-за технической неготовности аттракциона.
-- START: конкретный аттракцион явно запущен, в работе, готов к работе после стопа (фразы "в работе, холостые прокаты сделаны" или "тестовые запуски" — это START), продажи можно открыть для него.
+- START: конкретный аттракцион явно запущен, в работе, готов к работе после стопа (фразы "в работе, холостые прокаты сделаны" или "тестовые запуски" — это START), продажи можно открыть для него. ВАЖНО: фиксируй ЛЮБОЕ упоминание о возобновлении работы, даже если это короткое сообщение "аттракцион в работе".
 - START_GENERAL: общий запуск без конкретного аттракциона, например "все в работе", "все аттракционы запущены", "продажи открыть" для всех.
 - INFO: только если сообщение упоминает аттракцион, но не является стопом или запуском.
 
 Правила:
-- ВАЖНО: В поле attraction_name пиши точное название аттракциона прямо из текста (например: Станция Андромеда, Лунный экспресс, Космодром Восход, Вальс часов). НИКОГДА не заменяй и не выдумывай названия.
+- ВАЖНО: Каждое сообщение в чате должно быть проанализировано. Если аттракцион был в стопе, обязательно найди сообщение о его запуске.
+- Анализируй только сообщения, приведенные выше. Не добавляй события из сообщений, которых нет в этом фрагменте.
+- В поле attraction_name пиши точное название аттракциона прямо из текста (например: Станция Андромеда, Лунный экспресс, Космодром Восход, Вальс часов). НИКОГДА не заменяй и не выдумывай названия.
 - Не включай погодные/температурные ограничения, дождь, ветер, холод, влажность, аттракцион сохнет после воды: это INFO, не STOP_UNPLANNED.
 - Не включай происшествия с посетителями/детьми, потерявшихся людей, падения, травмы и общие сообщения службы безопасности: это INFO, не STOP_UNPLANNED.
 - Если одно сообщение содержит несколько аттракционов с разными статусами, создай отдельное событие для каждого статуса.
@@ -288,7 +434,7 @@ def call_instructor(
     cfg: dict[str, Any],
     client: Any,
     client_needs_model: bool,
-    response_model: type[Any],
+    response_model: Any,
     prompt: str,
     max_retries: int,
 ) -> Any:
@@ -357,9 +503,16 @@ def fill_event_times_from_messages(
         message_index = event_message_index(item)
         message_time = time_by_index.get(message_index, "")
         event_time = str(item.get("time", "")).strip()
-        if message_time and event_time != message_time:
-            item["model_time"] = event_time
+
+        # Если модель не нашла время в тексте (или оно пустое/дефолтное), берем время из заголовка сообщения
+        if not event_time or event_time == "--:--":
             item["time"] = message_time
+        else:
+            # Если модель нашла время, сохраняем его.
+            # Для отладки можем оставить время сообщения в отдельном поле.
+            if message_time and event_time != message_time:
+                item["message_time"] = message_time
+            # item["time"] остается равным event_time, которое пришло из модели
         filled.append(item)
     return filled
 
@@ -407,6 +560,111 @@ def normalize_events(
         normalized_events.append(item)
     normalized_events.sort(key=event_sort_key)
     return normalized_events
+
+
+def start_aliases_by_attraction(cfg: dict[str, Any]) -> dict[str, list[str]]:
+    aliases_by_attraction: dict[str, list[str]] = {}
+    for item in cfg.get("attractions", []):
+        attraction = str(item.get("sheet_name", "")).strip()
+        if not attraction:
+            continue
+        aliases = [attraction]
+        full_name = str(item.get("full_name", "")).strip()
+        if full_name:
+            aliases.append(full_name.split("/", 1)[0].strip())
+        aliases.extend(str(alias).strip() for alias in item.get("aliases", []) if str(alias).strip())
+        aliases_by_attraction[attraction] = list(dict.fromkeys(aliases))
+    return aliases_by_attraction
+
+
+def supplement_simple_start_events(
+    events: list[dict[str, Any]], messages: list[dict[str, str]], cfg: dict[str, Any]
+) -> list[dict[str, Any]]:
+    result = list(events)
+    existing = {
+        (
+            event_message_index(event),
+            str(event.get("event_type", "")).strip(),
+            str(event.get("attraction", "")).strip(),
+        )
+        for event in result
+    }
+    start_markers = [
+        str(marker).strip()
+        for marker in cfg.get("simple_start_markers", DEFAULT_SIMPLE_START_MARKERS)
+        if str(marker).strip()
+    ]
+    start_pattern = "|".join(re.escape(marker) for marker in start_markers)
+
+    for index, message in enumerate(messages, start=1):
+        text = str(message.get("text", "")).strip()
+        lowered = text.lower()
+        if not any(marker in lowered for marker in start_markers):
+            continue
+        for attraction, aliases in start_aliases_by_attraction(cfg).items():
+            if (index, "START", attraction) in existing:
+                continue
+            for alias in aliases:
+                alias_lower = alias.lower()
+                if not alias_lower:
+                    continue
+                pattern = rf"{re.escape(alias_lower)}.{{0,80}}\b(?:{start_pattern})"
+                if not re.search(pattern, lowered, flags=re.IGNORECASE):
+                    continue
+                event = {
+                    "chain_of_thought": "Короткое сообщение о возобновлении работы найдено правилом.",
+                    "message_index": index,
+                    "time": str(message.get("time", "")).strip(),
+                    "attraction_name": attraction,
+                    "event_type": "START",
+                    "reason": "",
+                    "quote": text[:140],
+                    "attraction": attraction,
+                }
+                result.append(event)
+                existing.add((index, "START", attraction))
+                break
+
+    result.sort(key=event_sort_key)
+    return result
+
+
+def enrich_stop_events_from_messages(
+    events: list[dict[str, Any]], messages: list[dict[str, str]], cfg: dict[str, Any]
+) -> list[dict[str, Any]]:
+    text_by_index = {
+        index: str(message.get("text", "")).strip()
+        for index, message in enumerate(messages, start=1)
+    }
+    generic_stop_quotes = [
+        str(quote).strip().lower()
+        for quote in cfg.get("generic_stop_quotes", DEFAULT_GENERIC_STOP_QUOTES)
+        if str(quote).strip()
+    ]
+    enriched: list[dict[str, Any]] = []
+    for event in events:
+        item = dict(event)
+        if str(item.get("event_type", "")).strip() != "STOP_UNPLANNED":
+            enriched.append(item)
+            continue
+
+        source_text = text_by_index.get(event_message_index(item), "")
+        if not source_text:
+            enriched.append(item)
+            continue
+
+        quote = str(item.get("quote", "")).strip()
+        quote_lower = quote.lower()
+        is_generic_quote = (
+            not quote
+            or any(quote_lower.endswith(marker) for marker in generic_stop_quotes)
+            or len(quote_lower.split()) <= 3
+        )
+        if is_generic_quote:
+            item["quote"] = source_text
+        item["source_text"] = source_text
+        enriched.append(item)
+    return enriched
 
 
 def normalize_event_attraction(event: dict[str, Any], cfg: dict[str, Any]) -> str:
@@ -470,6 +728,11 @@ def derive_technical_stop_reason(event: dict[str, Any], cfg: dict[str, Any]) -> 
     weather_markers = cfg.get("weather_markers", WEATHER_OR_ENV_MARKERS)
     tech_markers = cfg.get("technical_markers", TECHNICAL_STOP_MARKERS)
     generic_reasons = cfg.get("generic_stop_reasons", GENERIC_STOP_REASONS)
+    reason_patterns = tuple(
+        str(pattern).strip()
+        for pattern in cfg.get("technical_reason_patterns", DEFAULT_TECHNICAL_REASON_PATTERNS)
+        if str(pattern).strip()
+    )
 
     if any(marker in joined for marker in weather_markers):
         return ""
@@ -478,32 +741,20 @@ def derive_technical_stop_reason(event: dict[str, Any], cfg: dict[str, Any]) -> 
     if not any(marker in joined for marker in tech_markers):
         return ""
 
-    specific = first_reason_match(
-        quote,
-        (
-            r"(потеря связи)",
-            r"(ошибка [^.,;]+)",
-            r"(не запускается|не запустился|не запустилась|не запустились)",
-            r"(нет подачи питания[^.,;]*)",
-            r"(ремонт [^.,;]+)",
-            r"(замена [^.,;]+)",
-            r"(проверка работы [^.,;]+)",
-            r"(ведутся технические работы)",
-            r"(тех(?:нические)? неполадки)",
-            r"(техническая поломка|поломка[^.,;]*)",
-            r"(technical_breakdown|technical_failure|техническая поломка|поломка[^.,;]*)",
-            r"(неисправн(?:ость|ости)? [^.,;]+)",
-            r"(не открываются крепления)",
-            r"(платформа не в исходной)",
-            r"(не закрываются прижимные механизмы)",
-        ),
-    )
-
+    specific = first_reason_match(quote, reason_patterns)
     if specific:
         return specific
 
-    if model_reason and not any(marker in model_reason.lower() for marker in generic_reasons):
-        return clean_reason_text(model_reason)
+    # If the model-provided reason contains a technical marker, we trust it
+    if model_reason:
+        model_reason_lower = model_reason.lower()
+        if any(marker in model_reason_lower for marker in tech_markers):
+            return clean_reason_text(model_reason)
+        
+        # Otherwise, check if it's generic
+        if not any(marker in model_reason_lower for marker in generic_reasons):
+            return clean_reason_text(model_reason)
+
     if "механик на месте" in joined:
         return "Механик на месте"
     if "механик в пути" in joined or "механики в пути" in joined:
@@ -779,7 +1030,7 @@ def run_for_date(
     max_retries: int,
     force: bool = False,
     reuse: bool = False,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     
     if (reuse or not force) and output_path.exists():
         try:
@@ -790,32 +1041,74 @@ def run_for_date(
             if not raw_events and "events" in data:
                 raw_events = data["events"]
                 
-            events = normalize_events(raw_events, messages, cfg)
-            rows = build_rows_from_events(date, events, cfg)
+            events = enrich_stop_events_from_messages(
+                supplement_simple_start_events(normalize_events(raw_events, messages, cfg), messages, cfg),
+                messages,
+                cfg,
+            )
+            rows, quarantine = build_rows_from_events(date, events, cfg)
             print(f"[{date}] Reused existing JSON report: {output_path}")
-            return data, rows
+            return data, (rows, quarantine)
         except Exception as e:
             print(f"[{date}] Could not reuse {output_path}: {e}. Falling back to regenerate.")
 
-    prompt = build_prompt(cfg, date, messages)
+    chunk_specs = []
+    for chunk_number, (message_start, chunk_messages) in enumerate(iter_message_chunks(messages, cfg), start=1):
+        chunk_specs.append(
+            {
+                "chunk": chunk_number,
+                "message_start": message_start,
+                "message_end": message_start + len(chunk_messages) - 1,
+                "messages": chunk_messages,
+                "prompt": build_prompt(cfg, date, chunk_messages, message_start),
+            }
+        )
+
+    prompt_data = [
+        {
+            "chunk": item["chunk"],
+            "message_start": item["message_start"],
+            "message_end": item["message_end"],
+            "prompt": item["prompt"],
+        }
+        for item in chunk_specs
+    ]
+    prompt: Any = prompt_data[0]["prompt"] if len(prompt_data) == 1 else prompt_data
 
     if dry_run:
-        parsed = {"date": date, "events": []}
+        raw_events = []
         raw_model = None
     else:
-        _AttractionEvent, DayEvents = build_models()
+        AttractionEvent, _DayEvents = build_models()
         client, needs_model = make_instructor_client(cfg)
-        print(f"[{date}] Instructor + Ollama model: {cfg['model']}")
-        result = call_instructor(cfg, client, needs_model, DayEvents, prompt, max_retries)
-        parsed = model_to_dict(result)
-        raw_model = parsed
-
-    raw_events = parsed.get("events", [])
-    if not isinstance(raw_events, list):
+        response_model = list[AttractionEvent]
         raw_events = []
+        raw_model = []
+        for item in chunk_specs:
+            print(
+                f"[{date}] Instructor + Ollama model: {cfg['model']} "
+                f"(chunk {item['chunk']}/{len(chunk_specs)}, "
+                f"messages {item['message_start']}-{item['message_end']})"
+            )
+            result = call_instructor(cfg, client, needs_model, response_model, str(item["prompt"]), max_retries)
+            chunk_events = fix_nested_mojibake(extract_events_from_model_result(result))
+            raw_events.extend(chunk_events)
+            raw_model.append(
+                {
+                    "chunk": item["chunk"],
+                    "message_start": item["message_start"],
+                    "message_end": item["message_end"],
+                    "events_count": len(chunk_events),
+                    "events": chunk_events,
+                }
+            )
     
-    events = normalize_events(raw_events, messages, cfg)
-    rows = build_rows_from_events(date, events, cfg)
+    events = enrich_stop_events_from_messages(
+        supplement_simple_start_events(normalize_events(raw_events, messages, cfg), messages, cfg),
+        messages,
+        cfg,
+    )
+    rows, quarantine = build_rows_from_events(date, events, cfg)
 
     output = {
         "date": date,
@@ -829,6 +1122,8 @@ def run_for_date(
         "events": events,
         "rows_count": len(rows),
         "rows": rows,
+        "quarantine_count": len(quarantine),
+        "quarantine": quarantine,
     }
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -837,7 +1132,7 @@ def run_for_date(
         
     print(f"[{date}] Saved new report: {output_path}")
     print(f"[{date}] events: {len(events)}, rows: {len(rows)}")
-    return output, rows
+    return output, (rows, quarantine)
 
 
 def main() -> int:
@@ -848,7 +1143,7 @@ def main() -> int:
 
     json_path = resolve_path(base_dir, cfg["json_path"])
     report_dir = resolve_path(base_dir, cfg.get("report_dir", "reports"))
-    by_date = {date: fix_messages_mojibake(messages) for date, messages in read_messages(json_path).items()}
+    by_date = read_messages(json_path)
 
     if args.date:
         if args.date not in by_date:
