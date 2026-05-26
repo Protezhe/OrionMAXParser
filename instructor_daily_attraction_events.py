@@ -5,7 +5,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font
@@ -596,12 +596,13 @@ def supplement_simple_start_events(
     ]
     start_pattern = "|".join(re.escape(marker) for marker in start_markers)
 
+    aliases_map = start_aliases_by_attraction(cfg)
     for index, message in enumerate(messages, start=1):
         text = str(message.get("text", "")).strip()
         lowered = text.lower()
         if not any(marker in lowered for marker in start_markers):
             continue
-        for attraction, aliases in start_aliases_by_attraction(cfg).items():
+        for attraction, aliases in aliases_map.items():
             if (index, "START", attraction) in existing:
                 continue
             for alias in aliases:
@@ -786,7 +787,6 @@ def build_rows_from_events(date: str, events: list[dict[str, Any]], cfg: dict[st
         attraction = str(event.get("attraction", "")).strip()
 
         if event_type == "STOP_UNPLANNED":
-            # ЗДЕСЬ ПИТОН ФИЛЬТРУЕТ ЛИШНИЕ АТТРАКЦИОНЫ!
             if not is_target_attraction(attraction, cfg):
                 item = dict(event)
                 item["quarantine_reason"] = f"Not target attraction: {attraction}"
@@ -903,7 +903,7 @@ def write_rows_for_dates(
     target_dates: list[str],
     workbook_path: Path,
     output_path: Path,
-    quarantine: list[dict[str, Any]] = None,
+    quarantine: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     source_path = output_path if output_path.exists() else workbook_path
     
