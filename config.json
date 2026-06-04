@@ -7,7 +7,7 @@
     "temperature": 0.1,
     "top_p": 0.9
   },
-  "json_path": "05.2026.json",
+  "json_path": "06.2026.json",
   "stops_input_path": "Ввод остановок.xlsx",
   "input_sheet_name": "Ввод_остановок",
   "input_table_name": "tblStops",
@@ -34,7 +34,8 @@
     "обильного количества воды",
     "луж",
     "уборка",
-    "безхоз"
+    "безхоз",
+    "бесхоз"
   ],
   "technical_markers": [
     "тех",

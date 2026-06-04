@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//c/c/Users/Alf/PycharmProjects/OrionMAXParser/max-chat-parser-extension/popup/**)"
-    ]
-  }
-}

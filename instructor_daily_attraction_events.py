@@ -22,7 +22,7 @@ from attraction_stop_report import (
 )
 
 
-EventType = Literal["STOP_UNPLANNED", "START", "START_GENERAL", "INFO"]
+EventType = Literal["STOP_UNPLANNED", "START", "TEST_RUN", "START_GENERAL", "INFO"]
 
 WEATHER_OR_ENV_MARKERS = [
     "погод",
@@ -407,12 +407,16 @@ def build_prompt(
 
 Типы событий:
 - STOP_UNPLANNED: только внеплановая техническая остановка аттракциона: поломка, ошибка запуска, ремонт, внеплановое ТО, технические работы, потеря связи, ошибка датчика/механизма (например: не открываются крепления/бугели, платформа не в исходной, не закрываются прижимные механизмы), закрытие продаж из-за технической неготовности аттракциона.
-- START: конкретный аттракцион явно запущен, в работе, готов к работе после стопа (фразы "в работе, холостые прокаты сделаны" или "тестовые запуски" — это START), продажи можно открыть для него. ВАЖНО: фиксируй ЛЮБОЕ упоминание о возобновлении работы, даже если это короткое сообщение "аттракцион в работе".
+- TEST_RUN: промежуточные технические, холостые или тестовые прокаты механиков/инженеров после устранения неисправности (фразы: "механики делают тестовые прокаты", "прогнали вхолостую", "делаем тестовый запуск", "людей выпустили", "людей освободили"), когда аттракцион еще проверяется механиками и НЕ открыт для посетителей.
+- START: конкретный аттракцион полноценно запущен в работу для гостей, продажи открыты (фразы: "в работе", "запустили людей", "готов к работе", "открыли продажи"). ВАЖНО: Любые сообщения о тестовых прокатах механиков сюда НЕ ОТНОСЯТСЯ. Фиксируй тут только фактический выход к гостям.
 - START_GENERAL: общий запуск без конкретного аттракциона, например "все в работе", "все аттракционы запущены", "продажи открыть" для всех.
-- INFO: только если сообщение упоминает аттракцион, но не является стопом или запуском.
+- INFO: только если сообщение упоминает аттракцион, но не является стопом или полноценным запуском.
 
 Правила:
 - ВАЖНО: Каждое сообщение в чате должно быть проанализировано. Если аттракцион был в стопе, обязательно найди сообщение о его запуске.
+- ВАЖНО О ПРИОРИТЕТЕ: Если сначала идет сообщение о тесте (например, 18:21 "механики делают тестовый прокат"), а следом за ним — сообщение о запуске (например, 18:24 "Лунный экспресс в работе"), то для 18:21 создавай тип TEST_RUN, а для 18:24 создавай тип START. Не объединяй их и не путай!
+- "Людей выпустили" / "людей освободили" — это эвакуация пассажиров после стопа, тип TEST_RUN или INFO, но НЕ START. START — только "в работе", "запускаем гостей", "открыли продажи", "готов к работе".
+- Если сообщение содержит одновременно тестовый прокат И фразу о выпуске людей — создавай только TEST_RUN. START из этого же сообщения не создавай: реальный запуск будет в следующем сообщении.
 - Анализируй только сообщения, приведенные выше. Не добавляй события из сообщений, которых нет в этом фрагменте.
 - В поле attraction_name пиши точное название аттракциона прямо из текста (например: Станция Андромеда, Лунный экспресс, Космодром Восход, Вальс часов). НИКОГДА не заменяй и не выдумывай названия.
 - Не включай погодные/температурные ограничения, дождь, ветер, холод, влажность, аттракцион сохнет после воды: это INFO, не STOP_UNPLANNED.
@@ -428,7 +432,6 @@ def build_prompt(
 - quote должен быть короткой точной цитатой из исходного сообщения.
 - chain_of_thought заполняй как короткое проверочное обоснование в одно предложение, без скрытого хода рассуждений.
 """
-
 
 def call_instructor(
     cfg: dict[str, Any],
@@ -544,6 +547,28 @@ def filter_current_day_events(events: list[dict[str, Any]], messages: list[dict[
         filtered.append(event)
     return filtered
 
+def deduplicate_test_run_start_conflicts(
+    events: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """
+    Если модель выдала TEST_RUN и START из одного сообщения
+    для одного аттракциона — убираем START, оставляем TEST_RUN.
+    Настоящий START должен прийти из следующего сообщения.
+    """
+    test_run_keys: set[tuple[int, str]] = set()
+    for event in events:
+        if str(event.get("event_type", "")) == "TEST_RUN":
+            key = (event_message_index(event), str(event.get("attraction", "")))
+            test_run_keys.add(key)
+    
+    result = []
+    for event in events:
+        if str(event.get("event_type", "")) == "START":
+            key = (event_message_index(event), str(event.get("attraction", "")))
+            if key in test_run_keys:
+                continue  # дроп конфликтующего START
+        result.append(event)
+    return result
 
 def normalize_events(
     events: list[dict[str, Any]], messages: list[dict[str, str]], cfg: dict[str, Any]
@@ -559,7 +584,7 @@ def normalize_events(
         item["attraction"] = normalize_event_attraction(item, cfg)
         normalized_events.append(item)
     normalized_events.sort(key=event_sort_key)
-    return normalized_events
+    return deduplicate_test_run_start_conflicts(normalized_events)
 
 
 def start_aliases_by_attraction(cfg: dict[str, Any]) -> dict[str, list[str]]:
@@ -786,9 +811,18 @@ def build_rows_from_events(date: str, events: list[dict[str, Any]], cfg: dict[st
         event_type = str(event.get("event_type", "")).strip()
         attraction = str(event.get("attraction", "")).strip()
 
+        # Защитный код: если нейросеть поленилась и дала START/INFO на прокат, 
+        # Python сам перегрузит тип в TEST_RUN
+        quote_lower = str(event.get("quote", "")).lower()
+        text_lower = str(event.get("text", event.get("source_text", ""))).lower()
+        if "тестовый" in quote_lower or "прокат" in quote_lower or "тестовый" in text_lower or "прокат" in text_lower:
+            if event_type in ["START", "INFO"]:
+                event_type = "TEST_RUN"
+
         if event_type == "STOP_UNPLANNED":
             if not is_target_attraction(attraction, cfg):
                 item = dict(event)
+                item["date"] = date
                 item["quarantine_reason"] = f"Not target attraction: {attraction}"
                 quarantine.append(item)
                 continue
@@ -798,24 +832,36 @@ def build_rows_from_events(date: str, events: list[dict[str, Any]], cfg: dict[st
             reason = derive_technical_stop_reason(event, cfg)
             if not reason:
                 item = dict(event)
+                item["date"] = date
                 item["quarantine_reason"] = "Filtered by derive_technical_stop_reason (weather, visitor, or non-technical)"
                 quarantine.append(item)
                 continue
 
+            # ИСПРАВЛЕНИЕ: Если аттракцион уже "висит" открытым, но у него 
+            # уже было зафиксировано время (например, тест-драйв), либо это явно новый стоп:
             if attraction in open_by_attraction:
                 row = open_by_attraction[attraction]
-                if source_ref not in row["source"]:
-                    row["source"].append(source_ref)
-                if quote and quote not in row["evidence"]:
-                    row["evidence"].append(quote)
-                if reason and reason not in str(row.get("reason", "")):
-                    row["reason"] = "; ".join(item for item in [row.get("reason", ""), reason] if item)
-                if quote:
-                    row["note"] = "; ".join(item for item in [row.get("note", ""), quote] if item)
-                    row["stop_quote"] = row["note"]
-                row.setdefault("update_events", []).append(event)
-                continue
+                
+                # Если у старого стопа уже заполнено время старта (был TEST_RUN),
+                # значит старый инцидент по факту исчерпан. Закрываем его и удаляем из активных.
+                if row.get("start_time"):
+                    open_by_attraction.pop(attraction)
+                else:
+                    # Если старт заполнен не был, то это наслоение сообщений об ОДНОМ И ТОМ ЖЕ стопе.
+                    # Дописываем детали в текущую строку.
+                    if source_ref not in row["source"]:
+                        row["source"].append(source_ref)
+                    if quote and quote not in row["evidence"]:
+                        row["evidence"].append(quote)
+                    if reason and reason not in str(row.get("reason", "")):
+                        row["reason"] = "; ".join(item for item in [row.get("reason", ""), reason] if item)
+                    if quote:
+                        row["note"] = "; ".join(item for item in [row.get("note", ""), quote] if item)
+                        row["stop_quote"] = row["note"]
+                    row.setdefault("update_events", []).append(event)
+                    continue
 
+            # Создание новой записи простоя (выполнится, если старый стоп удален или его не было)
             row = {
                 "date": date,
                 "attraction": attraction,
@@ -836,23 +882,35 @@ def build_rows_from_events(date: str, events: list[dict[str, Any]], cfg: dict[st
             open_by_attraction[attraction] = row
             continue
 
+        if event_type == "TEST_RUN":
+            if attraction in open_by_attraction:
+                row = open_by_attraction[attraction]
+                # Записываем время теста, только если еще нет полноценного старта
+                if not row["start_time"]:
+                    row["start_time"] = str(event.get("time", "")).strip()
+                    row["start_quote"] = f"[Тест] {event.get('quote', '')}"
+                    row["start_event"] = event
+            continue
+
         if event_type == "START":
-            if not is_target_attraction(attraction, cfg):
-                continue
+            # Извлекаем (удаляем из отслеживания) запись простоя
             row = open_by_attraction.pop(attraction, None)
-            if row is None:
-                # If we have a START but no open STOP, maybe it's interesting for info?
-                continue
-            _apply_start_to_row(row, event)
+            if row is not None:
+                # Финальный старт затрет данные TEST_RUN, если они там были, и закроет строку
+                _apply_start_to_row(row, event)
             continue
 
         if event_type == "START_GENERAL":
             for row_attraction in list(open_by_attraction):
                 row = open_by_attraction.pop(row_attraction)
                 _apply_start_to_row(row, event)
+            continue # ИСПРАВЛЕНИЕ: добавлен пропущенный continue
         
         if event_type == "INFO":
-            quarantine.append(dict(event))
+            item = dict(event)
+            item["date"] = date
+            quarantine.append(item)
+            continue
                 
     return rows, quarantine
 
@@ -987,21 +1045,52 @@ def write_rows_for_dates(
             if q_ws.max_row > 1:
                 q_ws.delete_rows(2, q_ws.max_row - 1)
                 
-        headers = ["Message Index", "Time", "Attraction Name", "Event Type", "Reason", "Quote", "Quarantine Reason"]
+        headers = ["Date", "DateTime", "Message Index", "Time", "Attraction Name", "Event Type", "Reason", "Quote", "Quarantine Reason"]
         for col, header in enumerate(headers, start=1):
             q_ws.cell(1, col).value = header
             q_ws.cell(1, col).font = Font(bold=True)
 
         for i, event in enumerate(quarantine, start=2):
-            q_ws.cell(i, 1).value = event.get("message_index")
-            q_ws.cell(i, 2).value = event.get("time")
-            q_ws.cell(i, 3).value = event.get("attraction_name")
-            q_ws.cell(i, 4).value = event.get("event_type")
-            q_ws.cell(i, 5).value = event.get("reason")
-            q_ws.cell(i, 6).value = event.get("quote")
-            q_ws.cell(i, 7).value = event.get("quarantine_reason")
+            event_date = str(event.get("date", "")).strip()
+            event_time = str(event.get("time", "")).strip()
 
-        for col in range(1, 8):
+            # Col 1: Date
+            if event_date:
+                try:
+                    q_ws.cell(i, 1).value = dt.datetime.strptime(event_date, "%Y-%m-%d").date()
+                    q_ws.cell(i, 1).number_format = "DD.MM.YYYY"
+                except ValueError:
+                    q_ws.cell(i, 1).value = event_date
+            else:
+                q_ws.cell(i, 1).value = ""
+
+            # Col 2: DateTime (date + time combined)
+            if event_date and event_time:
+                try:
+                    q_ws.cell(i, 2).value = dt.datetime.strptime(
+                        f"{event_date} {event_time}", "%Y-%m-%d %H:%M"
+                    )
+                    q_ws.cell(i, 2).number_format = "DD.MM.YYYY HH:MM"
+                except ValueError:
+                    q_ws.cell(i, 2).value = f"{event_date} {event_time}"
+            elif event_date:
+                try:
+                    q_ws.cell(i, 2).value = dt.datetime.strptime(event_date, "%Y-%m-%d").date()
+                    q_ws.cell(i, 2).number_format = "DD.MM.YYYY"
+                except ValueError:
+                    q_ws.cell(i, 2).value = event_date
+            else:
+                q_ws.cell(i, 2).value = ""
+
+            q_ws.cell(i, 3).value = event.get("message_index")
+            q_ws.cell(i, 4).value = event_time
+            q_ws.cell(i, 5).value = event.get("attraction_name")
+            q_ws.cell(i, 6).value = event.get("event_type")
+            q_ws.cell(i, 7).value = event.get("reason")
+            q_ws.cell(i, 8).value = event.get("quote")
+            q_ws.cell(i, 9).value = event.get("quarantine_reason")
+
+        for col in range(1, 10):
             q_ws.column_dimensions[get_column_letter(col)].width = 20
 
     # 3. Final Save

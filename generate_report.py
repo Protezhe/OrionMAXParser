@@ -15,6 +15,7 @@ from openpyxl.drawing.image import Image as OpenpyxlImage
 import matplotlib
 matplotlib.use('Agg')  # Фоновый режим без открытия окон
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 # Константы цветов для таблиц (VBA репликация)
 RGB_ORANGE = "FFC000"
@@ -69,13 +70,7 @@ def apply_border(cell):
     thin = Side(border_style="thin", color="000000")
     cell.border = Border(top=thin, left=thin, right=thin, bottom=thin)
 
-def create_modern_chart(ws, anchor_cell: str, title: str, categories: List[str], values: List[float], color: str, is_time: bool = False):
-    """
-    Генерирует дизайнерский плоский график. 
-    Размеры подобраны так, чтобы картинка занимала ровно 19 строк в Excel при стандартной высоте.
-    """
-    plt.figure(figsize=(9.0, 3.8))
-    
+def draw_modern_chart(ax, title: str, categories: List[str], values: List[float], color: str, is_time: bool = False):
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = ['Arial', 'Calibri', 'DejaVu Sans']
     
@@ -89,15 +84,17 @@ def create_modern_chart(ws, anchor_cell: str, title: str, categories: List[str],
     # Столбец "Итого" подсвечиваем контрастным темным цветом
     colors = [color if cat != "Итого" else "#2C3E50" for cat in categories]
     
-    bars = plt.bar(categories, plot_values, color=colors, edgecolor='none', width=0.55, zorder=3)
+    bars = ax.bar(categories, plot_values, color=colors, edgecolor='none', width=0.55, zorder=3)
     
-    plt.grid(axis='y', color='#E0E0E0', linestyle='-', linewidth=0.8, zorder=0)
-    plt.title(title, fontsize=11, fontweight='bold', pad=12, color='#2C3E50')
-    plt.ylabel(ylabel, fontsize=9, color='#7F8C8D')
-    plt.xticks(fontsize=9, rotation=15, ha='right', color='#2C3E50')
-    plt.yticks(fontsize=9, color='#7F8C8D')
+    ax.grid(axis='y', color='#E0E0E0', linestyle='-', linewidth=0.8, zorder=0)
+    ax.set_title(title, fontsize=18, fontweight='bold', pad=12, color='#2C3E50')
+    ax.set_ylabel(ylabel, fontsize=14, color='#7F8C8D')
+    ax.tick_params(axis='x', labelsize=14, colors='#2C3E50')
+    ax.tick_params(axis='y', labelsize=14, colors='#7F8C8D')
+    for label in ax.get_xticklabels():
+        label.set_rotation(15)
+        label.set_ha('right')
     
-    ax = plt.gca()
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_color('#BDC3C7')
@@ -121,15 +118,71 @@ def create_modern_chart(ws, anchor_cell: str, title: str, categories: List[str],
                         textcoords="offset points",
                         ha='center', va='bottom', fontsize=8.5, fontweight='bold', color='#2C3E50')
 
+
+def create_modern_chart(ws, anchor_cell: str, title: str, categories: List[str], values: List[float], color: str, is_time: bool = False):
+    """
+    Генерирует дизайнерский плоский график. 
+    Размеры подобраны так, чтобы картинка занимала ровно 19 строк в Excel при стандартной высоте.
+    """
+    fig, ax = plt.subplots(figsize=(9.0, 5.8))
+    draw_modern_chart(ax, title, categories, values, color, is_time)
     plt.tight_layout()
     
     img_buf = io.BytesIO()
-    plt.savefig(img_buf, format='png', dpi=100) 
-    plt.close()
+    fig.savefig(img_buf, format='png', dpi=100) 
+    plt.close(fig)
     img_buf.seek(0)
     
     xl_img = OpenpyxlImage(img_buf)
     ws.add_image(xl_img, anchor_cell)
+
+
+def add_charts_pdf_page(pdf: PdfPages, page_title: str, categories: List[str], downtime_values: List[float], count_values: List[int]):
+    fig, axes = plt.subplots(2, 1, figsize=(8.27, 11.69))
+    fig.patch.set_facecolor('white')
+
+    draw_modern_chart(
+        axes[0],
+        f"{page_title}: время остановок",
+        categories,
+        downtime_values,
+        CHART_COLOR_DOWNTIME,
+        is_time=True
+    )
+    draw_modern_chart(
+        axes[1],
+        f"{page_title}: количество остановок",
+        categories,
+        count_values,
+        CHART_COLOR_COUNT,
+        is_time=False
+    )
+
+    fig.subplots_adjust(left=0.15, right=0.9, top=0.9, bottom=0.15, hspace=0.55)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def create_charts_pdf(output_path: Path, month: int, year: int, categories: List[str], monthly_downtime: List[float], monthly_stop_count: List[int], all_weeks_data: List[Tuple[int, List[float], List[int]]]):
+    with PdfPages(output_path) as pdf:
+        month_title = f"За {get_month_name_ru(month).lower()} {year}"
+        add_charts_pdf_page(
+            pdf,
+            month_title,
+            categories,
+            monthly_downtime + [sum(monthly_downtime)],
+            monthly_stop_count + [sum(monthly_stop_count)]
+        )
+
+        for week_num, w_downtime, w_stop_count in all_weeks_data:
+            week_title = f"{week_num} неделя"
+            add_charts_pdf_page(
+                pdf,
+                week_title,
+                categories,
+                w_downtime + [sum(w_downtime)],
+                w_stop_count + [sum(w_stop_count)]
+            )
 
 def generate_report(month_str: str, config_path: str):
     config = load_config(Path(config_path))
@@ -396,58 +449,7 @@ def generate_report(month_str: str, config_path: str):
         ws.column_dimensions[get_column_letter(c)].width = 12
     ws.column_dimensions['A'].width = 12
 
-    # --- Настройка ГОРИЗОНТАЛЬНОЙ верстки графиков (Исправлено накладывание) ---
-    chart_col1_letter = get_column_letter(summary_col + 2)  # Левый график (Время)
-    chart_col2_letter = get_column_letter(summary_col + 17) # Сдвинули на +17 колонок, чтобы не накладывалось!
     chart_categories = attr_names + ["Итого"]
-
-    # 1. МЕСЯЦ: Пара графиков бок о бок (Строка 4)
-    create_modern_chart(
-        ws=ws,
-        anchor_cell=f"{chart_col1_letter}4",
-        title=f"Время остановок эксплуатации аттракционов за {get_month_name_ru(month).lower()} {year}",
-        categories=chart_categories,
-        values=monthly_downtime + [sum(monthly_downtime)],
-        color=CHART_COLOR_DOWNTIME,
-        is_time=True
-    )
-
-    create_modern_chart(
-        ws=ws,
-        anchor_cell=f"{chart_col2_letter}4",
-        title=f"Количество остановок эксплуатации аттракционов за {get_month_name_ru(month).lower()} {year}",
-        categories=chart_categories,
-        values=monthly_stop_count + [sum(monthly_stop_count)],
-        color=CHART_COLOR_COUNT,
-        is_time=False
-    )
-
-    # 2. НЕДЕЛИ: Каждая неделя формирует свою ровную горизонтальную пару ниже
-    for idx, (week_num, w_downtime, w_stop_count) in enumerate(all_weeks_data):
-        # Одинаковый аккуратный шаг вниз по строкам (по 24 строки на блок)
-        chart_row_offset = 28 + idx * 24
-
-        # Еженедельный график времени простоя (Слева)
-        create_modern_chart(
-            ws=ws,
-            anchor_cell=f"{chart_col1_letter}{chart_row_offset}",
-            title=f"Время остановок эксплуатации аттракционов за {week_num} неделю",
-            categories=chart_categories,
-            values=w_downtime + [sum(w_downtime)],
-            color=CHART_COLOR_DOWNTIME,
-            is_time=True
-        )
-
-        # Еженедельный график количества остановок (Справа)
-        create_modern_chart(
-            ws=ws,
-            anchor_cell=f"{chart_col2_letter}{chart_row_offset}",
-            title=f"Количество остановок эксплуатации аттракционов за {week_num} неделю",
-            categories=chart_categories,
-            values=w_stop_count + [sum(w_stop_count)],
-            color=CHART_COLOR_COUNT,
-            is_time=False
-        )
 
     # Сохранение итогового отчета
     report_dir = Path(config.get("report_dir", "reports"))
@@ -455,12 +457,23 @@ def generate_report(month_str: str, config_path: str):
     
     output_filename = f"Отчет_{sheet_name}.xlsx"
     output_path = report_dir / output_filename
+    charts_output_path = report_dir / f"Графики_{sheet_name}.pdf"
     
     attempts = 0
     while attempts < 10:
         try:
             wb.save(output_path)
-            print(f"Clean report with side-by-side charts generated: {output_path}")
+            create_charts_pdf(
+                charts_output_path,
+                month,
+                year,
+                chart_categories,
+                monthly_downtime,
+                monthly_stop_count,
+                all_weeks_data
+            )
+            print(f"Table report generated: {output_path}")
+            print(f"Charts PDF generated: {charts_output_path}")
             break
         except PermissionError:
             print(f"Error: Could not save to {output_path}. Retrying...")
