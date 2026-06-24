@@ -15,6 +15,8 @@ from openpyxl.drawing.image import Image as OpenpyxlImage
 import matplotlib
 matplotlib.use('Agg')  # Фоновый режим без открытия окон
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgb
+from matplotlib.patches import Polygon, Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 
 # Константы цветов для таблиц (VBA репликация)
@@ -27,6 +29,14 @@ RGB_HEADER_BLUE = "D9EAF7"
 # Цвета для графиков как в ведомости Excel
 CHART_COLOR_DOWNTIME = "#ED7D31"  # Оранжевый для времени остановок
 CHART_COLOR_COUNT = "#5B9BD5"     # Синий для количества остановок
+
+def shade_color(color: str, factor: float) -> Tuple[float, float, float]:
+    r, g, b = to_rgb(color)
+    return (
+        max(0, min(1, r * factor)),
+        max(0, min(1, g * factor)),
+        max(0, min(1, b * factor)),
+    )
 
 def load_config(config_path: Path) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
@@ -81,9 +91,52 @@ def draw_modern_chart(ax, title: str, categories: List[str], values: List[float]
         plot_values = values
         ylabel = "Количество остановок"
         
-    colors = [color for _ in categories]
-    
-    bars = ax.bar(categories, plot_values, color=colors, edgecolor='none', width=0.55, zorder=3)
+    bar_width = 0.55
+    y_max = max(plot_values) if plot_values else 0
+    y_limit = y_max * 1.18 if y_max > 0 else 1
+    depth_x = 0.10
+    depth_y = y_limit * 0.025
+
+    ax.set_xlim(-0.5, len(categories) - 0.5 + depth_x)
+    ax.set_ylim(0, y_limit + depth_y)
+    ax.set_xticks(range(len(categories)))
+    ax.set_xticklabels(categories)
+
+    bar_shapes = []
+    for x_pos, height in enumerate(plot_values):
+        left = x_pos - bar_width / 2
+        right = x_pos + bar_width / 2
+
+        front = Rectangle(
+            (left, 0),
+            bar_width,
+            height,
+            facecolor=color,
+            edgecolor=shade_color(color, 0.72),
+            linewidth=0.8,
+            zorder=3,
+        )
+        right_side = Polygon(
+            [(right, 0), (right + depth_x, depth_y), (right + depth_x, height + depth_y), (right, height)],
+            closed=True,
+            facecolor=shade_color(color, 0.72),
+            edgecolor=shade_color(color, 0.62),
+            linewidth=0.8,
+            zorder=2.8,
+        )
+        top = Polygon(
+            [(left, height), (left + depth_x, height + depth_y), (right + depth_x, height + depth_y), (right, height)],
+            closed=True,
+            facecolor=shade_color(color, 1.12),
+            edgecolor=shade_color(color, 0.72),
+            linewidth=0.8,
+            zorder=3.2,
+        )
+
+        ax.add_patch(right_side)
+        ax.add_patch(front)
+        ax.add_patch(top)
+        bar_shapes.append((x_pos, height))
     
     ax.grid(axis='y', color='#E0E0E0', linestyle='-', linewidth=0.8, zorder=0)
     ax.set_title(title, fontsize=18, fontweight='bold', pad=12, color='#2C3E50')
@@ -100,8 +153,7 @@ def draw_modern_chart(ax, title: str, categories: List[str], values: List[float]
     ax.spines['bottom'].set_color('#BDC3C7')
     ax.set_axisbelow(True)
     
-    for bar in bars:
-        height = bar.get_height()
+    for x_pos, height in bar_shapes:
         if height > 0:
             if is_time:
                 total_minutes = int(round(height * 60))
@@ -112,7 +164,7 @@ def draw_modern_chart(ax, title: str, categories: List[str], values: List[float]
                 label = f"{int(height)}"
                 
             ax.annotate(label,
-                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xy=(x_pos + depth_x / 2, height + depth_y),
                         xytext=(0, 4),
                         textcoords="offset points",
                         ha='center', va='bottom', fontsize=8.5, fontweight='bold', color='#2C3E50')
