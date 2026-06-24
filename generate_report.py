@@ -24,9 +24,9 @@ RGB_GREEN = "70AD47"
 RGB_BLUE = "00B0F0"
 RGB_HEADER_BLUE = "D9EAF7"
 
-# Цвета для графиков (Современный плоский дизайн)
-CHART_COLOR_DOWNTIME = "#E67E22"  # Оранжевый для времени
-CHART_COLOR_COUNT = "#2980B9"     # Синий для количества
+# Цвета для графиков как в ведомости Excel
+CHART_COLOR_DOWNTIME = "#ED7D31"  # Оранжевый для времени остановок
+CHART_COLOR_COUNT = "#5B9BD5"     # Синий для количества остановок
 
 def load_config(config_path: Path) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
@@ -81,8 +81,7 @@ def draw_modern_chart(ax, title: str, categories: List[str], values: List[float]
         plot_values = values
         ylabel = "Количество остановок"
         
-    # Столбец "Итого" подсвечиваем контрастным темным цветом
-    colors = [color if cat != "Итого" else "#2C3E50" for cat in categories]
+    colors = [color for _ in categories]
     
     bars = ax.bar(categories, plot_values, color=colors, edgecolor='none', width=0.55, zorder=3)
     

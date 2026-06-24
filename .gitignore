@@ -11,6 +11,7 @@ __pycache__/
 /.claude/
 /.idea/
 .vscode/
+/flask_report_server
 
 # Generated reports and local data
 /reports/
